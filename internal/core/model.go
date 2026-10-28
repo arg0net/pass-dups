@@ -59,6 +59,24 @@ func (i Item) Value(field string) string {
 	return ""
 }
 
+// Set is the inverse of Value; it is the single place merge values enter an Item.
+func (i *Item) Set(field, value string) {
+	switch field {
+	case "title":
+		i.Title = value
+	case "username":
+		i.Username = value
+	case "email":
+		i.Email = value
+	case "password":
+		i.Password = value
+	case "note":
+		i.Note = value
+	case "urls":
+		i.URLs = DecodeURLs(value)
+	}
+}
+
 var ScalarFields = []string{"title", "username", "email", "password"}
 
 type Client interface {
@@ -70,6 +88,10 @@ type Client interface {
 }
 
 var ErrSchema = errors.New("unsupported or malformed pass-cli JSON")
+
+// ErrExtrasUnacknowledged is always the last check in Validate, so a plan failing
+// only with this error is otherwise valid.
+var ErrExtrasUnacknowledged = errors.New("acknowledge extra data that will not be transferred from entries selected for Trash")
 
 func object(b json.RawMessage) (map[string]json.RawMessage, error) {
 	var m map[string]json.RawMessage
@@ -84,45 +106,49 @@ func meaningful(b json.RawMessage) bool {
 	if len(strings.TrimSpace(string(b))) == 0 {
 		return false
 	}
-	var value any
-	if json.Unmarshal(b, &value) != nil {
-		return true
-	}
-	var present func(any) bool
-	present = func(v any) bool {
-		switch v := v.(type) {
-		case nil:
-			return false
-		case string:
-			return v != ""
-		case []any:
-			for _, child := range v {
-				if present(child) {
-					return true
-				}
+	value, valid := DecodeExtra(b)
+	return !valid || present(value)
+}
+
+func present(v any) bool {
+	switch v := v.(type) {
+	case nil:
+		return false
+	case string:
+		return v != ""
+	case []any:
+		for _, child := range v {
+			if present(child) {
+				return true
 			}
-			return false
-		case map[string]any:
-			for _, child := range v {
-				if present(child) {
-					return true
-				}
-			}
-			return false
-		default:
-			return true // Preserve scalar values, including false and zero.
 		}
+		return false
+	case map[string]any:
+		for _, child := range v {
+			if present(child) {
+				return true
+			}
+		}
+		return false
+	default:
+		return true // Preserve scalar values, including false and zero.
 	}
-	return present(value)
 }
 
 func (i Item) HasExtraData() bool {
-	for _, value := range i.Extras {
+	return len(i.ExtraKeys()) > 0
+}
+
+// ExtraKeys returns the sorted keys of extras holding meaningful data.
+func (i Item) ExtraKeys() []string {
+	keys := []string{}
+	for key, value := range i.Extras {
 		if meaningful(value) {
-			return true
+			keys = append(keys, key)
 		}
 	}
-	return false
+	sort.Strings(keys)
+	return keys
 }
 
 func ParseItem(b []byte) (Item, error) {
@@ -259,17 +285,37 @@ type Plan struct {
 	ExtrasAcknowledged bool
 }
 
-func (p Plan) NeedsExtrasAcknowledgment() bool {
+// ExtraDataTrashed lists Active entries selected for Trash that hold extra data,
+// such as TOTP seeds, passkeys, attachments or custom fields.
+func (p Plan) ExtraDataTrashed() []Item {
 	selected := make(map[string]bool, len(p.TrashIDs))
 	for _, id := range p.TrashIDs {
 		selected[id] = true
 	}
+	out := []Item{}
 	for _, i := range p.Originals {
 		if i.State == "Active" && selected[i.ID] && i.HasExtraData() {
-			return true
+			out = append(out, i)
 		}
 	}
-	return false
+	return out
+}
+
+func (p Plan) NeedsExtrasAcknowledgment() bool {
+	return len(p.ExtraDataTrashed()) > 0
+}
+
+// EntryLabels names entries by their position in Originals and their title.
+func (p Plan) EntryLabels(items []Item) string {
+	labels := []string{}
+	for _, i := range items {
+		for n, o := range p.Originals {
+			if o.ID == i.ID {
+				labels = append(labels, fmt.Sprintf("#%d %s", n+1, i.Title))
+			}
+		}
+	}
+	return strings.Join(labels, ", ")
 }
 
 func (p Plan) Target() Item {
@@ -281,6 +327,19 @@ func (p Plan) Target() Item {
 	return Item{}
 }
 
+// Result is the target as it will look after the plan's field updates.
+// Keep-none plans have no result and return the zero Item.
+func (p Plan) Result() Item {
+	if p.KeepNone {
+		return Item{}
+	}
+	result := p.Target()
+	for field, value := range p.Fields {
+		result.Set(field, value)
+	}
+	return result
+}
+
 func EncodeURLs(urls []string) (string, error) {
 	for _, u := range urls {
 		if strings.Contains(u, ",") || strings.TrimSpace(u) != u || u == "" {
@@ -288,6 +347,14 @@ func EncodeURLs(urls []string) (string, error) {
 		}
 	}
 	return strings.Join(urls, ", "), nil
+}
+
+// DecodeURLs reverses EncodeURLs.
+func DecodeURLs(v string) []string {
+	if v == "" {
+		return []string{}
+	}
+	return strings.Split(v, ", ")
 }
 
 func (p Plan) Validate() error {
@@ -325,9 +392,6 @@ func (p Plan) Validate() error {
 		}
 		seen[id] = true
 	}
-	if p.NeedsExtrasAcknowledgment() && !p.ExtrasAcknowledged {
-		return errors.New("acknowledge extra data on selected entries before staging")
-	}
 	if p.KeepNone && (activeCount == 0 || len(p.TrashIDs) != activeCount) {
 		return errors.New("keep none must select every Active entry for trash")
 	}
@@ -352,13 +416,9 @@ func (p Plan) Validate() error {
 		}
 		if f == "urls" {
 			if target.Autofill {
-				return errors.New("pass-cli cannot merge advanced autofill rules; retain the target URLs or merge them in Proton Pass")
+				return errors.New("this app does not support merging this entry's URL settings; keep the target's URLs unchanged or edit them in Proton Pass")
 			}
-			var urls []string
-			if v != "" {
-				urls = strings.Split(v, ", ")
-			}
-			encoded, err := EncodeURLs(urls)
+			encoded, err := EncodeURLs(DecodeURLs(v))
 			if err != nil || encoded != v {
 				return errors.New("URL change cannot round-trip through pass-cli")
 			}
@@ -366,6 +426,9 @@ func (p Plan) Validate() error {
 	}
 	if len(p.Fields) == 0 && len(p.TrashIDs) == 0 {
 		return errors.New("choose a field change or an entry to trash, or skip this group")
+	}
+	if !p.ExtrasAcknowledged && p.NeedsExtrasAcknowledgment() {
+		return fmt.Errorf("%w: %s", ErrExtrasUnacknowledged, p.EntryLabels(p.ExtraDataTrashed()))
 	}
 	return nil
 }

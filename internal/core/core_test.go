@@ -409,3 +409,16 @@ func TestFailureLeavesLaterGroupsUnattempted(t *testing.T) {
 		t.Fatal("batch continued after first failure")
 	}
 }
+
+func TestAcknowledgmentIsCheckedLast(t *testing.T) {
+	_, groups := load(t)
+	p := plan(find(groups, "example.com"))
+	p.ExtrasAcknowledged = false
+	if err := p.Validate(); !errors.Is(err, core.ErrExtrasUnacknowledged) {
+		t.Fatalf("expected an acknowledgment error, got %v", err)
+	}
+	p.Fields["title"] = ""
+	if err := p.Validate(); err == nil || errors.Is(err, core.ErrExtrasUnacknowledged) {
+		t.Fatalf("acknowledgment error hid another validation error: %v", err)
+	}
+}

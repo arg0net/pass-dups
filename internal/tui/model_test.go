@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -31,6 +32,12 @@ func key(m Model, k string) (Model, tea.Cmd) {
 		code = tea.KeyLeft
 	case "right":
 		code = tea.KeyRight
+	case "tab":
+		code = tea.KeyTab
+	case "pgdown":
+		code = tea.KeyPgDown
+	case "pgup":
+		code = tea.KeyPgUp
 	default:
 		code = []rune(k)[0]
 	}
@@ -90,26 +97,23 @@ func TestMaskingRevealResetAndControlSanitization(t *testing.T) {
 	}
 }
 
-func TestStagingRequiresPreviewAndExtrasAcknowledgment(t *testing.T) {
+func TestStagingRequiresPreviewWhichAcknowledgesExtraData(t *testing.T) {
 	m := reviewModel(t)
 	target := entryIndex(m, "a")
 	m.resetDraft(target)
 	m.cursor = 1 + entryIndex(m, "b")
 	m, _ = key(m, "space")
-	m, _ = key(m, "s")
-	if m.screen != reviewScreen || !strings.Contains(m.status, "acknowledge") || len(m.staged) != 0 {
-		t.Fatal("extra data acknowledgment bypassed")
-	}
-	m.cursor = m.rowCount() - 1
-	m, _ = key(m, "space")
 	m.draft.sources["password"] = entryIndex(m, "b")
+	if _, err := m.makePlan(); !errors.Is(err, core.ErrExtrasUnacknowledged) {
+		t.Fatal("draft plan was acknowledged before the preview page")
+	}
 	m, _ = key(m, "s")
 	if m.screen != previewScreen || len(m.staged) != 0 {
 		t.Fatal("staged before preview approval")
 	}
 	m, _ = key(m, "enter")
-	if len(m.staged) != 1 || m.screen != groupScreen {
-		t.Fatal("stage did not succeed")
+	if len(m.staged) != 1 || m.screen != groupScreen || !m.plans()[0].ExtrasAcknowledged {
+		t.Fatal("stage from the preview page did not record acknowledgment")
 	}
 	if !strings.Contains(m.body(), "[Resolved]") || !strings.Contains(m.body(), "[Pending]") || !strings.Contains(m.body(), "1 resolved · 1 pending") {
 		t.Fatal("selection list does not distinguish resolved groups")
@@ -193,7 +197,6 @@ func TestFilterResizeAndDiscardPrompts(t *testing.T) {
 	m.filter.SetValue("")
 	m.openGroup(0)
 	m.draft.trash[m.groups[0].Items[1].ID] = true
-	m.draft.ack = true
 	m, _ = key(m, "s")
 	m, _ = key(m, "enter")
 	if len(m.staged) != 1 {
@@ -266,7 +269,6 @@ func TestOfflineEndToEndBatch(t *testing.T) {
 		}
 	}
 	m.draft.trash[id] = true
-	m.draft.ack = true
 	m, _ = key(m, "s")
 	m, _ = key(m, "enter")
 	m, _ = key(m, "b")
@@ -554,13 +556,7 @@ func TestKeepNonePreviewStagingAndRevision(t *testing.T) {
 		t.Fatal("keep-none choice was not rendered")
 	}
 	m, _ = key(m, "s")
-	if m.screen != reviewScreen || !strings.Contains(m.status, "acknowledge") {
-		t.Fatal("keep-none bypassed extra-data acknowledgment")
-	}
-	m.cursor = m.rowCount() - 1
-	m, _ = key(m, "space")
-	m, _ = key(m, "s")
-	if m.screen != previewScreen || len(m.staged) != 0 || !strings.Contains(m.body(), "No merge target") {
+	if m.screen != previewScreen || len(m.staged) != 0 || !strings.Contains(m.body(), "No merge target") || !strings.Contains(m.body(), "accepting that the highlighted data") {
 		t.Fatal("keep-none bypassed the preview")
 	}
 	m, _ = key(m, "enter")
@@ -599,7 +595,6 @@ func TestKeepNoneOfflineBatch(t *testing.T) {
 	m = settle(t, m, cmd)
 	group := m.groups[m.group]
 	m, _ = key(m, "d")
-	m.draft.ack = true
 	m, _ = key(m, "s")
 	m, _ = key(m, "enter")
 	m, _ = key(m, "b")
@@ -625,53 +620,54 @@ func TestKeepNoneOfflineBatch(t *testing.T) {
 	}
 }
 
-func TestAcknowledgmentAppearsOnlyForSelectedExtraData(t *testing.T) {
-	const checkbox = "I acknowledge extra data"
+func TestPreviewPageEndsWithExtraDataLoss(t *testing.T) {
+	const marker = "extra data not transferred"
 	m := reviewModel(t)
 	m.resetDraft(entryIndex(m, "a"))
-	if strings.Contains(m.body(), checkbox) {
-		t.Fatal("acknowledgment shown with no trash selection")
-	}
 	m.cursor = 1 + entryIndex(m, "d")
 	m, _ = key(m, "space")
 	rows := m.rowCount()
-	if strings.Contains(m.body(), checkbox) {
-		t.Fatal("retained extra data triggered acknowledgment")
+	if strings.Contains(m.body(), marker) {
+		t.Fatal("entry without extra data was marked")
 	}
 	m, _ = key(m, "s")
-	if m.screen != previewScreen {
-		t.Fatal("clean entry could not be staged without acknowledgment")
+	if m.screen != previewScreen || strings.Contains(m.body(), "Extra data not transferred") {
+		t.Fatal("clean entry preview reported extra data loss")
 	}
 	m, _ = key(m, "esc")
 	m.cursor = 1 + entryIndex(m, "b")
 	m, _ = key(m, "space")
-	if !strings.Contains(m.body(), checkbox) || m.rowCount() != rows+1 {
-		t.Fatal("risky trash selection did not add acknowledgment row")
+	b := m.groups[m.group].Items[entryIndex(m, "b")]
+	label := fmt.Sprintf("#%d %s", entryIndex(m, "b")+1, b.Title)
+	m.viewport.SetWidth(200)
+	if m.rowCount() != rows || strings.Count(m.body(), marker) != 1 || strings.Contains(m.body(), "I acknowledge") {
+		t.Fatal("review should mark the risky entry without an acknowledgment control")
 	}
-	m.cursor = m.rowCount() - 1
-	m, _ = key(m, "space")
-	if !m.draft.ack {
-		t.Fatal("conditional acknowledgment row did not toggle")
+	m, _ = key(m, "s")
+	body := m.body()
+	loss := strings.Index(body, "Extra data not transferred from entries moving to Trash")
+	if m.screen != previewScreen || loss < 0 || !strings.Contains(body[loss:], label+":") {
+		t.Fatal("preview page does not name the entry losing extra data")
 	}
+	if strings.Contains(body, "r reveals") || !strings.Contains(body, "[masked]") {
+		t.Fatal("preview page suggests a reveal key it does not support")
+	}
+	if loss < strings.LastIndex(body, "[TRASH ·") || loss > strings.Index(body, "Not kept after merge") || !strings.Contains(body[loss:], "accepting that the highlighted data") {
+		t.Fatal("data loss is not highlighted at the end of the preview page")
+	}
+	m, _ = key(m, "esc")
 	m.cursor = 1 + entryIndex(m, "b")
 	m, _ = key(m, "space")
-	if strings.Contains(m.body(), checkbox) || m.rowCount() != rows {
-		t.Fatal("acknowledgment did not disappear after deselecting risky entry")
-	}
-	p, err := m.makePlan()
+	p, err := m.reviewedPlan()
 	if err != nil {
 		t.Fatal(err)
 	}
 	if p.ExtrasAcknowledged {
-		t.Fatal("unnecessary acknowledgment retained in plan")
-	}
-	m, _ = key(m, "s")
-	if m.screen != previewScreen || strings.Contains(m.body(), "acknowledgment recorded") {
-		t.Fatal("preview still requires or records unnecessary acknowledgment")
+		t.Fatal("unnecessary acknowledgment recorded in plan")
 	}
 }
 
-func TestKeepNoneWithoutExtraDataSkipsAcknowledgment(t *testing.T) {
+func TestKeepNoneDoesNotHighlightAlreadyTrashedExtraData(t *testing.T) {
 	c := passcli.Client{Runner: demo.New()}
 	// The only entry with extras is already in Trash, so its data is untouched.
 	if err := c.Trash(context.Background(), "demo", "b"); err != nil {
@@ -698,11 +694,47 @@ func TestKeepNoneWithoutExtraDataSkipsAcknowledgment(t *testing.T) {
 		t.Fatal("already-Trashed extra data triggered checkbox in keep-none mode")
 	}
 	m, _ = key(m, "s")
-	if m.screen != previewScreen || m.draft.ack {
+	if m.screen != previewScreen {
 		t.Fatal("keep-none required acknowledgment for entries without extras")
 	}
 	m, _ = key(m, "enter")
 	if len(m.staged) != 1 || m.plans()[0].ExtrasAcknowledged {
 		t.Fatal("clean keep-none decision was not staged without acknowledgment")
+	}
+}
+
+func TestReturningToGroupListKeepsSelectedGroup(t *testing.T) {
+	m := reviewModel(t)
+	if len(m.groups) < 2 {
+		t.Fatal("synthetic scan needs at least two groups")
+	}
+	last := len(m.groups) - 1
+	m.openGroup(last)
+	m, _ = key(m, "esc")
+	if m.screen != groupScreen || m.visibleGroups()[m.cursor] != last {
+		t.Fatalf("cursor on row %d after leaving group %d", m.cursor, last)
+	}
+	m, _ = key(m, "enter")
+	m, _ = key(m, "]")
+	m, _ = key(m, "esc")
+	if m.visibleGroups()[m.cursor] != 0 {
+		t.Fatal("cursor did not follow group navigation within review")
+	}
+	m.filter.SetValue("no group matches this")
+	m.openGroup(last)
+	m, _ = key(m, "esc")
+	if m.cursor != 0 {
+		t.Fatal("cursor not reset when the group is filtered out")
+	}
+}
+
+func TestFieldComparisonStatesAreColored(t *testing.T) {
+	m := reviewModel(t)
+	m.viewport.SetWidth(200)
+	body := m.body()
+	for _, f := range core.ScalarFields {
+		if !strings.Contains(body, f+" ["+good.Render("equal")) && !strings.Contains(body, f+" ["+warn.Render("different")) {
+			t.Errorf("%s comparison state is not colored", f)
+		}
 	}
 }

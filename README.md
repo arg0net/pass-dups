@@ -42,6 +42,12 @@ session and permissions; it does not manage authentication.
    Trashed entries stay unchanged.
 3. Choose entries to keep or trash. All entries initially remain kept. Choose a
    source entry for each scalar field, and toggle the desired URL and note blocks.
+   A live pane on the right shows the merged result as you select values, including
+   combined notes, URLs, retained extra data and the entries selected for Trash.
+   Passwords and extra data follow the same **r** hide/reveal setting as the sources.
+   Press **Tab** to focus the preview and scroll it independently; Tab returns to
+   the merge choices. Below 80 columns, Tab switches between full-width choices
+   and preview instead of showing them side by side.
    To discard the entire group, press **d**, or cycle the target row to **Keep none**.
    This selects every Active entry for Trash and performs no field updates.
 4. Press **s** to preview the result, then **Enter** to stage it. Review more groups.
@@ -57,10 +63,13 @@ Multiple entries can remain in a group. A domain match is a review candidate:
 personal and work accounts on the same site often need to stay separate.
 
 **Keep none** uses the same preview, staging and final batch approval as other
-decisions. Already-Trashed entries stay unchanged, and extra-data acknowledgment
-appears only when an Active entry selected for Trash contains nonempty additional
-data. Empty containers and extras on retained or already-Trashed entries do not
-require acknowledgment. Choose an Active
+decisions. Already-Trashed entries stay unchanged. Information not retained in any
+kept Active entry is highlighted in amber in group review, the live preview, and
+the batch summary. When an Active entry selected for Trash holds nonempty extra
+data, its row is marked. The **s** preview page ends with a summary of everything
+that will not be kept, naming each such entry and its extra-data keys; pressing
+**Enter** there stages the decision and acknowledges that loss. Empty containers
+and extras on retained or already-Trashed entries are not flagged. Choose an Active
 target again to leave Keep none mode and reset the draft's choices.
 
 To include saved website URLs as well as item names, explicitly opt in:
@@ -82,8 +91,9 @@ with synthetic data.
 | Vaults | `Enter` select; `r` retry listing |
 | Groups | `Enter` load/review selected group; `/` filter; `Esc` clear filter; `d` detected domains; `b` batch; `x` unstage; `r` rescan; `v` switch vault |
 | Detected domains | arrows or `PgUp`/`PgDn` scroll; `Esc` back; this view performs no additional reads |
-| Comparison | left/right or `h`/`l` choose target/source, including Keep none on the target row; `Space` toggle; `d` keep none (trash entire group); `r` reveal secrets; `s` preview; `x` unstage/reset; `[`/`]` previous/next group; `n` skip to next; `Esc` back |
-| Preview | `Enter` stage; `Esc` revise |
+| Comparison | left/right or `h`/`l` choose target/source, including Keep none on the target row; `Space` toggle; `Tab` focus live preview/choices; `d` keep none (trash entire group); `r` reveal secrets in both panes; `s` preview before staging; `x` unstage/reset; `[`/`]` previous/next group; `n` skip to next; `Esc` back |
+| Focused live preview | arrows, `j`/`k` or `PgUp`/`PgDn` scroll; `Tab` return to choices; `r` hide/reveal; `s` preview before staging; `Esc` back. Other review keys are ignored until choices are focused again |
+| Preview | `Enter` stage, accepting the data listed as not kept; `Esc` revise |
 | Staged batch | `Enter` revise selected decision; `x` unstage; `a` request approval; `Esc` back |
 | Approval | `y` confirm; `n` or `Esc` cancel |
 | Running operation | `Esc` or `Ctrl+C` cancel and wait for its result |
@@ -100,7 +110,7 @@ in stored data are replaced for display; original field values remain intact.
   including quoted/bracketed URLs, names with copy-number suffixes, and names with
   punctuation beside the hostname. Email addresses are not treated as website
   domains. `user.wolfram.com` and `wolfram.com` group together as `wolfram.com`.
-- Saved website URLs and advanced autofill URLs contribute only in `--all-urls`
+- Saved website URLs, including newer autofill URL records, contribute only in `--all-urls`
   mode. Opening a default-scan group loads its details without expanding discovery
   to entries in other groups or entries whose names have no recognized domain.
 - Names are normalized with IDNA and the Public Suffix List, including private
@@ -122,14 +132,23 @@ in stored data are replaced for display; original field values remain intact.
 - Standard merge fields are title, username, email, password, legacy URLs and
   notes. Scalar values come from a chosen source entry. Selected URLs retain
   their displayed order; selected distinct note blocks join with a blank line.
-- Custom fields, TOTP seeds, passkeys, attachments, advanced autofill rules and
+- Custom fields, TOTP seeds, passkeys, attachments, URL matching settings and
   unknown extra data are comparison-only. They remain on the target. Trashing an
-  entry containing extras requires explicit acknowledgment that they will not be
-  transferred. Keep that entry if its additional data is still needed.
+  entry containing extras is acknowledged by staging from the preview page, which
+  lists them as not transferred; keep that entry if its additional data is still
+  needed. Extra data
+  from entries selected for Trash is also highlighted when it is absent from every
+  kept Active entry. Already-preserved custom fields and empty defaults are excluded.
+- The highlights also cover usernames, email addresses, passwords, URLs and notes
+  that will not be kept, including overwritten values on the merge target. Passwords
+  and extra data stay masked until revealed; staging and batch summaries mask them.
+  Entries moved to Trash remain recoverable there.
 - The CLI represents URL updates as a comma-separated string. The app rejects
   changes that would alter a URL containing a literal comma or surrounding
-  whitespace. Existing such URLs can remain unchanged. Targets with advanced
-  autofill rules cannot have their legacy URLs changed through this tool.
+  whitespace. Existing such URLs can remain unchanged. This app does not support
+  changing URLs on targets with newer autofill URL records, even if their matching
+  settings are all defaults. Keep the target's original URLs selected to merge
+  other fields, or edit those URLs in Proton Pass.
 - The app rejects standard field changes shadowed by a same-named custom field,
   because the CLI would otherwise update the custom field instead.
 
@@ -185,6 +204,7 @@ go build -o pass-dups .
 Tests inject a fake command runner. Subprocess error/cancellation tests invoke the
 Go test executable itself, never `pass-cli`. Coverage includes domain matching,
 transitive groups, JSON validation, merge selection, extra-data acknowledgment,
+dropped-information highlights,
 stale entries, partial failures, cancellation, secret masking, responsive views,
 an end-to-end offline TUI batch, metadata-only scanning, per-group lazy loading,
 scan-error presentation, and the reported Wolfram hostname pair.

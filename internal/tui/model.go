@@ -50,42 +50,44 @@ type draft struct {
 	sources       map[string]int
 	urls, notes   []string
 	urlOn, noteOn map[string]bool
-	ack           bool
 }
 
 type Model struct {
-	client        core.Client
-	demo          bool
-	allURLs       bool
-	screen        screen
-	vaults        []core.Vault
-	vault         core.Vault
-	groups        []core.Group
-	scan          core.ScanResult
-	group         int
-	cursor        int
-	draft         draft
-	staged        map[string]core.Plan
-	drafts        map[string]draft
-	reveal        bool
-	filter        textinput.Model
-	filtering     bool
-	viewport      viewport.Model
-	spinner       spinner.Model
-	width, height int
-	focusLine     int
-	status        string
-	confirm       string
-	progress      core.Progress
-	result        core.BatchResult
-	events        chan tea.Msg
-	cancel        context.CancelFunc
-	lastOp        string
+	client         core.Client
+	demo           bool
+	allURLs        bool
+	screen         screen
+	vaults         []core.Vault
+	vault          core.Vault
+	groups         []core.Group
+	scan           core.ScanResult
+	group          int
+	cursor         int
+	draft          draft
+	staged         map[string]core.Plan
+	drafts         map[string]draft
+	reveal         bool
+	filter         textinput.Model
+	filtering      bool
+	viewport       viewport.Model
+	mergePreview   viewport.Model
+	previewFocused bool
+	spinner        spinner.Model
+	width, height  int
+	focusLine      int
+	status         string
+	confirm        string
+	progress       core.Progress
+	result         core.BatchResult
+	events         chan tea.Msg
+	cancel         context.CancelFunc
+	lastOp         string
 }
 
 var accent = lipgloss.NewStyle().Foreground(lipgloss.Color("110")).Bold(true)
 var dim = lipgloss.NewStyle().Foreground(lipgloss.Color("245"))
 var warn = lipgloss.NewStyle().Foreground(lipgloss.Color("214"))
+var good = lipgloss.NewStyle().Foreground(lipgloss.Color("114"))
 
 func New(c core.Client, demo bool, allURLs bool) Model {
 	f := textinput.New()
@@ -96,7 +98,9 @@ func New(c core.Client, demo bool, allURLs bool) Model {
 	v.SetWidth(76)
 	v.SetHeight(15)
 	v.SoftWrap = true
-	m := Model{client: c, demo: demo, allURLs: allURLs, screen: busyScreen, staged: map[string]core.Plan{}, drafts: map[string]draft{}, filter: f, viewport: v, spinner: spinner.New(spinner.WithSpinner(spinner.Dot), spinner.WithStyle(accent)), width: 80, height: 24, progress: core.Progress{Phase: "Loading vaults"}}
+	p := viewport.New()
+	p.SoftWrap = true
+	m := Model{client: c, demo: demo, allURLs: allURLs, screen: busyScreen, staged: map[string]core.Plan{}, drafts: map[string]draft{}, filter: f, viewport: v, mergePreview: p, spinner: spinner.New(spinner.WithSpinner(spinner.Dot), spinner.WithStyle(accent)), width: 80, height: 24, progress: core.Progress{Phase: "Loading vaults"}}
 	m.refresh(false)
 	return m
 }
@@ -118,6 +122,7 @@ func (m *Model) start(kind string) tea.Cmd {
 	m.spinner = spinner.New(spinner.WithSpinner(spinner.Dot), spinner.WithStyle(accent))
 	m.lastOp = kind
 	m.reveal = false
+	m.previewFocused = false
 	m.status = ""
 	m.confirm = ""
 	m.progress = core.Progress{Phase: "Loading vaults"}
@@ -178,8 +183,6 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = max(1, msg.Width)
 		m.height = max(1, msg.Height)
-		m.viewport.SetWidth(max(16, m.width-4))
-		m.viewport.SetHeight(max(1, m.height-9))
 		m.filter.SetWidth(max(8, m.width-16))
 	case progressMsg:
 		m.progress = core.Progress(msg)
@@ -211,6 +214,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.openGroup(m.group)
 			} else {
 				m.screen = groupScreen
+				m.cursorToGroup(m.group)
 			}
 		case "apply":
 			m.screen = resultScreen
@@ -277,8 +281,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			break
 		}
+		if m.screen == reviewScreen && key == "tab" {
+			m.previewFocused = !m.previewFocused
+			m.refresh(false)
+			return m, nil
+		}
 		if key == "pgup" || key == "pgdown" || key == "ctrl+u" || key == "ctrl+d" {
-			m.viewport, cmd = m.viewport.Update(msg)
+			if m.screen == reviewScreen && m.previewFocused {
+				m.mergePreview, cmd = m.mergePreview.Update(msg)
+			} else {
+				m.viewport, cmd = m.viewport.Update(msg)
+			}
+			m.refresh(false)
+			return m, cmd
+		}
+		// A focused preview passes only its footer's keys to the review handler,
+		// so draft-changing keys cannot act while the choices are out of focus.
+		if m.screen == reviewScreen && m.previewFocused && key != "r" && key != "s" && key != "esc" {
+			m.mergePreview, cmd = m.mergePreview.Update(msg)
 			m.refresh(false)
 			return m, cmd
 		}
@@ -355,7 +375,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "d":
 				m.selectNone()
 			case "s":
-				if _, err := m.makePlan(); err != nil {
+				if _, err := m.reviewedPlan(); err != nil {
 					m.status = err.Error()
 				} else {
 					m.screen = previewScreen
@@ -373,7 +393,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				cmd = m.requestGroup((m.group + len(m.groups) - 1) % len(m.groups))
 			case "esc":
 				m.screen = groupScreen
-				m.cursor = 0
+				m.cursorToGroup(m.group)
 				m.reveal = false
 				m.status = ""
 			}
@@ -382,7 +402,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case "esc":
 				m.screen = reviewScreen
 			case "enter":
-				p, err := m.makePlan()
+				p, err := m.reviewedPlan()
 				if err != nil {
 					m.status = err.Error()
 					break
@@ -390,13 +410,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.staged[p.GroupID] = p
 				m.drafts[p.GroupID] = cloneDraft(m.draft)
 				m.screen = groupScreen
-				m.cursor = 0
-				for row, n := range m.visibleGroups() {
-					if m.groups[n].ID == p.GroupID {
-						m.cursor = row
-						break
-					}
-				}
+				m.cursorToGroup(m.group)
 				m.status = "Group resolved; decision staged. Press b to review the batch."
 				m.reveal = false
 			}
@@ -481,6 +495,17 @@ func (m Model) visibleGroups() []int {
 	return out
 }
 
+// cursorToGroup selects group n in the list, or the top row if filtered out.
+func (m *Model) cursorToGroup(n int) {
+	m.cursor = 0
+	for row, visible := range m.visibleGroups() {
+		if visible == n {
+			m.cursor = row
+			return
+		}
+	}
+}
+
 func (m *Model) requestGroup(n int) tea.Cmd {
 	if m.groups[n].Loaded {
 		m.openGroup(n)
@@ -495,6 +520,8 @@ func (m *Model) openGroup(n int) {
 	m.screen = reviewScreen
 	m.cursor = 0
 	m.reveal = false
+	m.previewFocused = false
+	m.mergePreview.GotoTop()
 	m.status = ""
 	m.viewport.GotoTop()
 	g := m.groups[n]
@@ -559,13 +586,11 @@ func (m *Model) resetDraft(target int) {
 		d.noteOn[i.Note] = true
 	}
 	m.draft = d
+	m.mergePreview.GotoTop()
 }
 
 func (m Model) rowCount() int {
 	count := 1 + len(m.groups[m.group].Items) + len(core.ScalarFields) + len(m.draft.urls) + len(m.draft.notes)
-	if m.draftPlan().NeedsExtrasAcknowledgment() {
-		count++
-	}
 	return count
 }
 
@@ -577,7 +602,6 @@ func (m Model) draftPlan() core.Plan {
 			p.TrashIDs = append(p.TrashIDs, i.ID)
 		}
 	}
-	p.ExtrasAcknowledged = d.ack && p.NeedsExtrasAcknowledgment()
 	return p
 }
 
@@ -601,6 +625,7 @@ func (m *Model) selectNone() {
 		m.draft.noteOn[note] = false
 	}
 	m.cursor = 0
+	m.mergePreview.GotoTop()
 	m.status = "Keep none selected. Press s to preview moving all Active entries to Trash."
 }
 
@@ -637,11 +662,7 @@ func (m *Model) change(delta int) {
 		return
 	}
 	if d.keepNone {
-		if m.draftPlan().NeedsExtrasAcknowledgment() && row == m.rowCount()-1 {
-			d.ack = !d.ack
-		} else {
-			m.status = "Keep none selected; choose an Active target to edit merge choices"
-		}
+		m.status = "Keep none selected; choose an Active target to edit merge choices"
 		return
 	}
 	row--
@@ -674,10 +695,18 @@ func (m *Model) change(delta int) {
 		d.noteOn[note] = !d.noteOn[note]
 		return
 	}
-	row -= len(d.notes)
-	if row == 0 && m.draftPlan().NeedsExtrasAcknowledgment() {
-		d.ack = !d.ack
+}
+
+// reviewedPlan is the plan as staged from the preview page. That page ends by
+// highlighting every value that will not be kept, including extra data on
+// entries moving to Trash, so pressing Enter there is the acknowledgment.
+func (m Model) reviewedPlan() (core.Plan, error) {
+	p, err := m.makePlan()
+	if errors.Is(err, core.ErrExtrasUnacknowledged) {
+		p.ExtrasAcknowledged = true
+		err = p.Validate()
 	}
+	return p, err
 }
 
 func (m Model) makePlan() (core.Plan, error) {
@@ -692,15 +721,10 @@ func (m Model) makePlan() (core.Plan, error) {
 	}
 	target := g.Items[d.target]
 	p.TargetID = target.ID
-	for _, f := range core.ScalarFields {
-		if v := g.Items[d.sources[f]].Value(f); v != target.Value(f) {
+	values, urls := m.mergedValues()
+	for f, v := range values {
+		if v != target.Value(f) {
 			p.Fields[f] = v
-		}
-	}
-	urls := []string{}
-	for _, u := range d.urls {
-		if d.urlOn[u] {
-			urls = append(urls, u)
 		}
 	}
 	// Compare slices first: an unchanged legacy URL with a comma is safe to retain.
@@ -710,15 +734,6 @@ func (m Model) makePlan() (core.Plan, error) {
 			return p, err
 		}
 		p.Fields["urls"] = v
-	}
-	notes := []string{}
-	for _, s := range d.notes {
-		if d.noteOn[s] {
-			notes = append(notes, s)
-		}
-	}
-	if note := strings.Join(notes, "\n\n"); note != target.Note {
-		p.Fields["note"] = note
 	}
 	return p, p.Validate()
 }
@@ -759,13 +774,25 @@ func display(field, value string, reveal bool) string {
 }
 
 func (m *Model) refresh(focus bool) {
+	m.sizePanes()
+	// Dropped data is computed once per refresh and shared by both panes.
+	var dropped []core.DroppedEntry
 	if m.screen == reviewScreen {
 		m.cursor = min(m.cursor, max(0, m.rowCount()-1))
+		dropped = m.droppedData()
 	}
 	m.focusLine = -1
-	content := m.body()
+	content := m.bodyWith(dropped)
 	m.viewport.SetContent(content)
-	if focus && m.focusLine >= 0 {
+	if m.screen != reviewScreen {
+		m.previewFocused = false
+	}
+	if m.screen == reviewScreen && (m.width >= splitPreviewWidth || m.previewFocused) {
+		m.mergePreview.SetContent(m.mergePreviewBody(dropped))
+	} else {
+		m.mergePreview.SetContent("")
+	}
+	if focus && !m.previewFocused && m.focusLine >= 0 {
 		if m.focusLine < m.viewport.YOffset() {
 			m.viewport.SetYOffset(m.focusLine)
 		}
@@ -776,9 +803,18 @@ func (m *Model) refresh(focus bool) {
 }
 
 func (m *Model) body() string {
+	var dropped []core.DroppedEntry
+	if m.screen == reviewScreen {
+		dropped = m.droppedData()
+	}
+	return m.bodyWith(dropped)
+}
+
+func (m *Model) bodyWith(dropped []core.DroppedEntry) string {
 	var b strings.Builder
+	width := m.viewport.Width()
 	line := func(s string) {
-		b.WriteString(lipgloss.NewStyle().Width(max(12, m.width-4)).Render(s))
+		b.WriteString(lipgloss.NewStyle().Width(width).Render(s))
 		b.WriteByte('\n')
 	}
 	row := 0
@@ -788,7 +824,7 @@ func (m *Model) body() string {
 			prefix = "› "
 			m.focusLine = strings.Count(b.String(), "\n")
 		}
-		wrapped := lipgloss.NewStyle().Width(max(12, m.width-6)).Render(s)
+		wrapped := lipgloss.NewStyle().Width(max(10, width-2)).Render(s)
 		line(prefix + strings.ReplaceAll(wrapped, "\n", "\n  "))
 		row++
 	}
@@ -870,6 +906,11 @@ func (m *Model) body() string {
 	case reviewScreen:
 		g := m.groups[m.group]
 		d := m.draft
+		p := m.draftPlan()
+		risky := map[string]bool{}
+		for _, i := range p.ExtraDataTrashed() {
+			risky[i.ID] = true
+		}
 		line(accent.Render(fmt.Sprintf("Group %d/%d · %s", m.group+1, len(m.groups), Safe(strings.Join(g.Domains, ", ")))))
 		line(groupState(g))
 		line(dim.Render("←/→ target or keep none · d keep none · s previews decision"))
@@ -893,9 +934,14 @@ func (m *Model) body() string {
 			if i.State == "Trashed" {
 				action = "UNCHANGED"
 			}
-			add(fmt.Sprintf("[%s · %s] #%d %s  [%s]", action, Safe(i.State), n+1, Safe(i.Title), Safe(i.ID)))
+			entry := fmt.Sprintf("[%s · %s] #%d %s  [%s]", action, Safe(i.State), n+1, Safe(i.Title), Safe(i.ID))
+			if risky[i.ID] {
+				entry += warn.Render("  ⚠ extra data not transferred")
+			}
+			add(entry)
 			line(dim.Render("    " + entryDates(i.CreateTime, i.ModifyTime)))
 		}
+		renderDroppedInfo(dropped, m.reveal, true, line)
 		line("")
 		for _, f := range core.ScalarFields {
 			values := map[string]bool{}
@@ -906,9 +952,9 @@ func (m *Model) body() string {
 					missing = true
 				}
 			}
-			state := "equal"
+			state := good.Render("equal")
 			if len(values) > 1 {
-				state = "different"
+				state = warn.Render("different")
 			}
 			if missing {
 				state += " · missing value"
@@ -924,7 +970,7 @@ func (m *Model) body() string {
 			for n, i := range g.Items {
 				cells = append(cells, fmt.Sprintf("#%d [%s] %s", n+1, Safe(i.State), display(f, i.Value(f), m.reveal)))
 			}
-			if m.width >= 120 && f != "title" {
+			if width >= 120 && f != "title" {
 				line("    " + Safe(strings.Join(cells, " │ ")))
 			} else {
 				for _, c := range cells {
@@ -957,14 +1003,6 @@ func (m *Model) body() string {
 			}
 			add("[" + mark + "] " + Safe(s) + "  " + sources(g.Items, func(i core.Item) bool { return i.Note == s }))
 		}
-		if m.draftPlan().NeedsExtrasAcknowledgment() {
-			line("")
-			mark := " "
-			if d.ack {
-				mark = "x"
-			}
-			add("[" + mark + "] I acknowledge extra data on entries selected for trash will not be transferred")
-		}
 		line("")
 		line(accent.Render("Domain links"))
 		for _, domain := range g.Domains {
@@ -983,26 +1021,23 @@ func (m *Model) body() string {
 				line("  none")
 			}
 			for _, k := range keys {
-				value := "[masked; r reveals]"
-				if m.reveal {
-					var compact strings.Builder
-					var v any
-					_ = json.Unmarshal(i.Extras[k], &v)
-					b, _ := json.Marshal(v)
-					compact.Write(b)
-					value = Safe(compact.String())
-				}
+				value := displayExtra(i.Extras[k], m.reveal)
 				line("  " + Safe(k) + " [" + extraStatus(g.Items, k) + "]: " + value)
 			}
 		}
 	case previewScreen:
 		line(accent.Render("Review this decision before staging"))
 		line("")
-		p, err := m.makePlan()
+		p, err := m.reviewedPlan()
 		if err != nil {
 			line(warn.Render(Safe(err.Error())))
 		} else {
 			m.planBody(&b, p)
+			if len(p.ExtraDataTrashed())+len(p.DroppedData()) > 0 {
+				line(warn.Render("\nEnter stages this decision, accepting that the highlighted data will not be kept."))
+				line("No vault changes happen yet.")
+				break
+			}
 		}
 		line("\nEnter stages this decision. No vault changes happen yet.")
 	case stagedScreen:
@@ -1042,7 +1077,7 @@ func (m *Model) body() string {
 
 func (m Model) planBody(b *strings.Builder, p core.Plan) {
 	line := func(s string) {
-		b.WriteString(lipgloss.NewStyle().Width(max(12, m.width-4)).Render(s))
+		b.WriteString(lipgloss.NewStyle().Width(m.viewport.Width()).Render(s))
 		b.WriteByte('\n')
 	}
 	target := p.Target()
@@ -1067,9 +1102,15 @@ func (m Model) planBody(b *strings.Builder, p core.Plan) {
 		line(fmt.Sprintf("  [%s · %s] %s [%s]", action, Safe(i.State), Safe(i.Title), Safe(i.ID)))
 		line("    " + entryDates(i.CreateTime, i.ModifyTime))
 	}
-	if p.ExtrasAcknowledged && p.NeedsExtrasAcknowledgment() {
-		line("  Extra data acknowledgment recorded.")
+	// The loss summary comes last so it is the final thing read before staging.
+	if trashed := p.ExtraDataTrashed(); len(trashed) > 0 {
+		line("")
+		line(warn.Bold(true).Render("Extra data not transferred from entries moving to Trash"))
+		for _, i := range trashed {
+			line(warn.Render("  " + Safe(p.EntryLabels([]core.Item{i})) + ": " + Safe(strings.Join(i.ExtraKeys(), ", "))))
+		}
 	}
+	renderDroppedInfo(p.DroppedData(), false, false, line)
 }
 
 func sources(items []core.Item, matches func(core.Item) bool) string {
@@ -1111,8 +1152,7 @@ func extraStatus(items []core.Item, key string) string {
 			values[""] = true
 			continue
 		}
-		var v any
-		_ = json.Unmarshal(b, &v)
+		v, _ := core.DecodeExtra(b)
 		b, _ = json.Marshal(v)
 		values[string(b)] = true
 	}
@@ -1151,7 +1191,11 @@ func (m Model) View() tea.View {
 	case detectionScreen:
 		footer = "↑/↓ / PgUp / PgDn scroll · Esc back · q quit"
 	case reviewScreen:
-		footer += " · s preview · d keep none · r reveal · [/] previous/next · Esc back"
+		if m.previewFocused {
+			footer = "Tab choices · ↑/↓ / PgUp/PgDn scroll preview · r hide/reveal · s preview · Esc back"
+		} else {
+			footer += " · Tab live preview · s preview · d keep none · r reveal · [/] previous/next · Esc back"
+		}
 	case previewScreen:
 		footer = "Enter stage · Esc revise · PgUp/PgDn scroll"
 	case stagedScreen:
@@ -1178,7 +1222,16 @@ func (m Model) View() tea.View {
 	if m.screen == groupScreen {
 		filter = m.filter.View()
 	}
-	text := header + "\n" + dim.Render(strings.Repeat("─", max(1, m.width-4))) + "\n" + m.viewport.View() + "\n" + filter + "\n" + warn.Render(status) + "\n" + dim.Render(footer)
+	body := m.viewport.View()
+	if m.screen == reviewScreen {
+		if m.width >= splitPreviewWidth {
+			divider := dim.Render(strings.TrimSuffix(strings.Repeat(" │ \n", m.viewport.Height()), "\n"))
+			body = lipgloss.JoinHorizontal(lipgloss.Top, body, divider, m.mergePreview.View())
+		} else if m.previewFocused {
+			body = m.mergePreview.View()
+		}
+	}
+	text := header + "\n" + dim.Render(strings.Repeat("─", max(1, m.width-4))) + "\n" + body + "\n" + filter + "\n" + warn.Render(status) + "\n" + dim.Render(footer)
 	v := tea.NewView(lipgloss.NewStyle().Padding(0, 2).Width(m.width).Render(text))
 	v.AltScreen = true
 	return v
