@@ -5,9 +5,9 @@ import (
 	"encoding/json"
 	"testing"
 
-	"pass-dups/internal/core"
-	"pass-dups/internal/demo"
-	"pass-dups/internal/passcli"
+	"github.com/arg0net/pass-dups/internal/core"
+	"github.com/arg0net/pass-dups/internal/demo"
+	"github.com/arg0net/pass-dups/internal/passcli"
 )
 
 func TestMixedStatesPrioritizeActiveEntriesAndGroups(t *testing.T) {

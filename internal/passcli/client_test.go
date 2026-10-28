@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
-	"pass-dups/internal/core"
-	"pass-dups/internal/demo"
+	"github.com/arg0net/pass-dups/internal/core"
+	"github.com/arg0net/pass-dups/internal/demo"
 )
 
 type canned struct {

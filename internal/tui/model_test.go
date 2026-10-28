@@ -10,9 +10,9 @@ import (
 	"time"
 
 	tea "charm.land/bubbletea/v2"
-	"pass-dups/internal/core"
-	"pass-dups/internal/demo"
-	"pass-dups/internal/passcli"
+	"github.com/arg0net/pass-dups/internal/core"
+	"github.com/arg0net/pass-dups/internal/demo"
+	"github.com/arg0net/pass-dups/internal/passcli"
 )
 
 func key(m Model, k string) (Model, tea.Cmd) {

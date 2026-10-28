@@ -6,7 +6,7 @@ import (
 	"strings"
 
 	"charm.land/lipgloss/v2"
-	"pass-dups/internal/core"
+	"github.com/arg0net/pass-dups/internal/core"
 )
 
 const splitPreviewWidth = 80

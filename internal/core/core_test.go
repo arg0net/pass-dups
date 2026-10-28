@@ -9,9 +9,9 @@ import (
 	"sync"
 	"testing"
 
-	"pass-dups/internal/core"
-	"pass-dups/internal/demo"
-	"pass-dups/internal/passcli"
+	"github.com/arg0net/pass-dups/internal/core"
+	"github.com/arg0net/pass-dups/internal/demo"
+	"github.com/arg0net/pass-dups/internal/passcli"
 )
 
 func TestDomains(t *testing.T) {

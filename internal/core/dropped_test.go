@@ -5,7 +5,7 @@ import (
 	"reflect"
 	"testing"
 
-	"pass-dups/internal/core"
+	"github.com/arg0net/pass-dups/internal/core"
 )
 
 func syntheticItem(id string) core.Item {

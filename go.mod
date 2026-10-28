@@ -1,4 +1,4 @@
-module pass-dups
+module github.com/arg0net/pass-dups
 
 go 1.27.0
 

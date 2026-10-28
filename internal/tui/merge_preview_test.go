@@ -8,7 +8,7 @@ import (
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
-	"pass-dups/internal/core"
+	"github.com/arg0net/pass-dups/internal/core"
 )
 
 func TestLivePreviewMatchesMergedFieldSelections(t *testing.T) {

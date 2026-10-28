@@ -7,9 +7,9 @@ import (
 	"os/exec"
 
 	tea "charm.land/bubbletea/v2"
-	"pass-dups/internal/demo"
-	"pass-dups/internal/passcli"
-	"pass-dups/internal/tui"
+	"github.com/arg0net/pass-dups/internal/demo"
+	"github.com/arg0net/pass-dups/internal/passcli"
+	"github.com/arg0net/pass-dups/internal/tui"
 )
 
 func main() {

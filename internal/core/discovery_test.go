@@ -8,9 +8,9 @@ import (
 	"sync/atomic"
 	"testing"
 
-	"pass-dups/internal/core"
-	"pass-dups/internal/demo"
-	"pass-dups/internal/passcli"
+	"github.com/arg0net/pass-dups/internal/core"
+	"github.com/arg0net/pass-dups/internal/demo"
+	"github.com/arg0net/pass-dups/internal/passcli"
 )
 
 // These are public hostnames from the reported example; IDs are synthetic.

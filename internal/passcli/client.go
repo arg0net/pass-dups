@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"pass-dups/internal/core"
+	"github.com/arg0net/pass-dups/internal/core"
 )
 
 // Runner is the only boundary that may start a process. Tests and demo replace it.

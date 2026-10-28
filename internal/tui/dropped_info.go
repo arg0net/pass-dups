@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"sort"
 
-	"pass-dups/internal/core"
+	"github.com/arg0net/pass-dups/internal/core"
 )
 
 func (m Model) droppedData() []core.DroppedEntry {
